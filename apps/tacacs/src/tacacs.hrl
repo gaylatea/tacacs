@@ -1,3 +1,5 @@
+-type netdata() :: iolist() | bitstring().
+
 -define(AUTHEN, 16#1).
 -define(AUTHOR, 16#2).
 -define(ACCT, 16#3).
@@ -35,14 +37,14 @@
 % connection to the server to verify that a given user has access to a
 % device at all.
 -record(authen_start, {
-	action,
-	privilege_level,
-	authen_type,
-	service,
-	user,
-	port,
-	remote_addr= <<"">>,
-	data= <<"">>}).
+	action :: non_neg_integer(),
+	privilege_level :: non_neg_integer(),
+	authen_type :: non_neg_integer(),
+	service :: non_neg_integer(),
+	user :: netdata(),
+	port :: netdata(),
+	remote_addr= <<"">> :: netdata(),
+	data= <<"">> :: netdata()}).
 
 -define(AUTHEN_STATUS_PASS, 16#1).
 -define(AUTHEN_STATUS_FAIL, 16#2).
@@ -60,10 +62,10 @@
 % password) from the device. They must always have an even sequence
 % number.
 -record(authen_reply, {
-	status,
-	flags=0,
-	server_msg= <<"">>,
-	data= <<"">>}).
+	status :: non_neg_integer(),
+	flags=0 :: non_neg_integer(),
+	server_msg= <<"">> :: netdata(),
+	data= <<"">> :: netdata()}).
 
 -define(CONTINUE_FLAG_ABORT, 16#1).
 % This is an Authentication Continue packet, used by the client to
@@ -71,8 +73,8 @@
 % Reply. They must always have an odd sequence number.
 -record(authen_continue, {
 	flags=0 :: non_neg_integer(),
-	user_msg :: iolist() | bitstring(),
-	data= <<"">> :: iolist() | bitstring()}).
+	user_msg :: netdata(),
+	data= <<"">> :: netdata()}).
 
 % Record types that can be found in the packet_data field.
 -type tacacs_inner_data() :: #authen_start{} | #authen_reply{} | #authen_continue{}.
@@ -86,4 +88,4 @@
   sequence :: non_neg_integer(),
   flags :: non_neg_integer(),
   session_id :: non_neg_integer(),
-  packet_data :: iolist() | tacacs_inner_data() | bitstring()}).
+  packet_data :: netdata() | tacacs_inner_data()}).
