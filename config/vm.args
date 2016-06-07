@@ -1,0 +1,6 @@
+-sname tacacs
+
+-setcookie tacacs_cookie
+
++K true
++A30
