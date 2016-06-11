@@ -37,6 +37,32 @@ serialize(TacacsData) ->
 %%====================================================================
 %% Internal API.
 %%====================================================================
+parse_variable_fields(BitData, Lengths) ->
+	parse_variable_fields(BitData, Lengths, []).
+parse_variable_fields(BitData, [], State) ->
+	{BitData, lists:flatten(State)};
+parse_variable_fields(BitData, Lengths, State) ->
+	[FieldLength|L] = Lengths,
+	<<Field:FieldLength, Rest/bitstring>> = BitData,
+	parse_variable_fields(Rest, L, lists:append(State, [Field])).
+
+serialize_variable_fields(DataList, ElementLengths) ->
+	serialize_variable_fields(DataList, ElementLengths, []).
+serialize_variable_fields(DataList, [], State) ->
+	{DataList, lists:flatten(State)};
+serialize_variable_fields(DataList, ElementLengths, State) ->
+	[Field|F] = DataList,
+	[FieldLength|L] = ElementLengths,
+	Serialized = lists:append(State, [<<Field:FieldLength>>]),
+	serialize_variable_fields(F, L, Serialized).
+
+gen_args_field_lengths(Count) ->
+	gen_args_field_lengths(Count, []).
+gen_args_field_lengths(0, State) ->
+	State;
+gen_args_field_lengths(Count, State) ->
+	gen_args_field_lengths(Count - 1, lists:append(State, [8])).
+
 -spec parse_data(#tacacs{}) -> #tacacs{}.
 parse_data(TacacsData=#tacacs{type=?AUTHEN, sequence=1}) ->
 	<<Action:8, PrivilegeLevel:8, AuthType:8, Service:8,
@@ -84,7 +110,31 @@ parse_data(TacacsData=#tacacs{type=?AUTHEN}) when TacacsData#tacacs.sequence rem
 	<<UserMessage:UserMessageLength/bitstring, Data:DataLength/bitstring,
 		_Rest/bitstring>> = Rest,
 	TacacsData#tacacs{packet_data=#authen_continue{
-		flags=Flags, user_msg=UserMessage, data=Data}}.
+		flags=Flags, user_msg=UserMessage, data=Data}};
+parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem 2 =:= 1 ->
+	<<AuthenticationMethod:8, PrivilegeLevel:8, AuthenticationType:8,
+		AuthenticationService:8, UserBytes:8, PortBytes:8, RemoteAddrBytes:8,
+		ArgumentCount:8, Rest/bitstring>> = TacacsData#tacacs.packet_data,
+
+	UserLength = UserBytes * 8,
+	PortLength = PortBytes * 8,
+	RemoteAddrLength = RemoteAddrBytes * 8,
+
+	ArgLengthFieldLengths = gen_args_field_lengths(ArgumentCount),
+	{MoreData, ArgumentLengths} = parse_variable_fields(Rest, ArgLengthFieldLengths),
+	<<User:UserLength/bitstring, Port:PortLength/bitstring,
+		RemoteAddr:RemoteAddrLength/bitstring, ArgsData/bitstring>> = MoreData,
+	{_, Args} = parse_variable_fields(ArgsData, [N*8 || N <- ArgumentLengths]),
+	TacacsData#tacacs{packet_data=#author_request{
+		authen_method=AuthenticationMethod, priv_lvl=PrivilegeLevel,
+		authen_type=AuthenticationType, authen_service=AuthenticationService,
+		user=User, port=Port, rem_addr=RemoteAddr, args=Args}};
+parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
+	<<"">>;
+parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
+	<<"">>;
+parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 1 ->
+	<<"">>.
 
 -spec serialize_data(tacacs_inner_data()) -> bitstring().
 serialize_data(AuthData=#authen_start{}) ->
@@ -116,7 +166,32 @@ serialize_data(AuthData=#authen_continue{}) ->
 	DataLength = iolist_size(Data),
 
 	<<UserMessageLength:16, DataLength:16, Flags:8, UserMessage/bitstring,
-		Data/bitstring>>.
+		Data/bitstring>>;
+serialize_data(AuthData=#author_request{}) ->
+	#author_request{authen_method=AuthenicationMethod, priv_lvl=PrivilegeLevel,
+		authen_type=AuthenticationType, authen_service=AuthenticationService,
+		user=User, port=Port, rem_addr=RemoteAddr, args=Args} = AuthData,
+
+	UserLength = iolist_size(User),
+	PortLength = iolist_size(Port),
+	RemoteAddrLength = iolist_size(RemoteAddr),
+	ArgumentCount = length(Args),
+
+	ArgumentLengths = [iolist_size(X) || X <- Args],
+	ArgumentLengthSizes = gen_args_field_lengths(ArgumentCount),
+	ArgumentLengthData = serialize_variable_fields(ArgumentLengths, ArgumentLengthSizes),
+	ArgumentsData = serialize_variable_fields(Args, ArgumentLengths),
+
+	<<AuthenicationMethod:8, PrivilegeLevel:8, AuthenticationType:8,
+		AuthenticationService:8, UserLength:8, PortLength:8, RemoteAddrLength:8,
+		ArgumentCount:8, ArgumentLengthData/bitstring, User/bitstring,
+		Port/bitstring, RemoteAddr/bitstring, ArgumentsData/bitstring>>;
+serialize_data(AuthData=#author_response{}) ->
+	<<"">>;
+serialize_data(AuthData=#acct_request{}) ->
+	<<"">>;
+serialize_data(AuthData=#acct_response{}) ->
+	<<"">>.
 
 %%====================================================================
 %% Tests.
@@ -129,6 +204,38 @@ basic_parse_serialize_test() ->
 	Data = parse(Auth),
 	RawData = serialize(Data),
 	?assertEqual(RawData, Auth),
+	ok.
+
+blank_parse_variable_fields_test() ->
+	IoData = <<1, 2>>,
+	FieldLengths = [],
+	{IoData, _} = parse_variable_fields(IoData, FieldLengths),
+	ok.
+
+parse_variable_fields_test() ->
+	IoData = <<1:8, 14:16, 1:8>>,
+	FieldLengths = [8, 16],
+	{RemainingData, Fields} = parse_variable_fields(IoData, FieldLengths),
+	?assertEqual(RemainingData, <<1:8>>),
+	?assertEqual(Fields, [1, 14]),
+	ok.
+
+gen_args_length_test() ->
+	[8, 8, 8, 8] = gen_args_field_lengths(4),
+	ok.
+
+serialize_variable_fields_test() ->
+	Data = [1, 1, 1, 7],
+	Lengths = [8, 8, 8, 8],
+	{[], <<1:8, 1:8, 1:8, 7:8>>} = serialize_variable_fields(Data, Lengths),
+
+	ExtraData = [1, 2, 3, 4, 5],
+	ExtraLengths = [8, 8, 8],
+	{[4, 5], <<1:8, 2:8, 3:8>>} = serialize_variable_fields(ExtraData, ExtraLengths),
+
+	IoListData = [<<"cmd=test">>, <<"words">>],
+	IoLengths = [64, 40],
+	{[], <<"cmd=testwords">>} = serialize_variable_fields(IoListData, IoLengths),
 	ok.
 
 commutative_parse_serialize_test() ->
@@ -161,6 +268,18 @@ commutative_parse_serialize_test() ->
 		packet_data=#authen_continue{user_msg= <<"testpassword">>}},
 	AuthContinueData = serialize(AuthContinue),
 	AuthContinue = parse(AuthContinueData),
+
+	% Authorization Request =============================================
+	AuthorizationRequest = #tacacs{
+		version=0, type=?AUTHOR, sequence=1, flags=?UNENCRYPTED_FLAG, session_id=1,
+		packet_data=#author_request{
+			authen_method=?AUTHEN_METH_LOCAL, priv_lvl=?PRIV_LVL_USER,
+			authen_type=?AUTHEN_TYPE_ASCII, authen_service=?AUTHEN_SVC_LOGIN,
+			user= <<"silversupreme">>, port= <<"tty0">>,
+			rem_addr= <<"Test Datacentre">>,
+			args=[<<"cmd=test">>, <<"protocol=unknown">>]}},
+	AuthorizationRequestData = serialize(AuthorizationRequest),
+	AuthorizationRequest = parse(AuthorizationRequestData),
 	ok.
 
 %%%-------------------------------------------------------------------

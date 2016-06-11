@@ -1,5 +1,3 @@
--type netdata() :: iolist() | bitstring().
-
 -define(AUTHEN, 16#1).
 -define(AUTHOR, 16#2).
 -define(ACCT, 16#3).
@@ -41,10 +39,11 @@
 	privilege_level :: non_neg_integer(),
 	authen_type :: non_neg_integer(),
 	service :: non_neg_integer(),
-	user :: netdata(),
-	port :: netdata(),
-	remote_addr= <<"">> :: netdata(),
-	data= <<"">> :: netdata()}).
+	user :: iodata(),
+	port :: iodata(),
+	remote_addr= <<"">> :: iodata(),
+	data= <<"">> :: iodata()}).
+
 
 -define(AUTHEN_STATUS_PASS, 16#1).
 -define(AUTHEN_STATUS_FAIL, 16#2).
@@ -64,8 +63,9 @@
 -record(authen_reply, {
 	status :: non_neg_integer(),
 	flags=0 :: non_neg_integer(),
-	server_msg= <<"">> :: netdata(),
-	data= <<"">> :: netdata()}).
+	server_msg= <<"">> :: iodata(),
+	data= <<"">> :: iodata()}).
+
 
 -define(CONTINUE_FLAG_ABORT, 16#1).
 % This is an Authentication Continue packet, used by the client to
@@ -73,11 +73,80 @@
 % Reply. They must always have an odd sequence number.
 -record(authen_continue, {
 	flags=0 :: non_neg_integer(),
-	user_msg :: netdata(),
-	data= <<"">> :: netdata()}).
+	user_msg :: iodata(),
+	data= <<"">> :: iodata()}).
+
+
+-define(AUTHEN_METH_NOT_SET, 16#0).
+-define(AUTHEN_METH_NONE, 16#1).
+-define(AUTHEN_METH_KRB5, 16#2).
+-define(AUTHEN_METH_LINE, 16#3).
+-define(AUTHEN_METH_ENABLE, 16#4).
+-define(AUTHEN_METH_LOCAL, 16#5).
+-define(AUTHEN_METH_TACACSPLUS, 16#6).
+-define(AUTHEN_METH_GUEST, 16#8).
+-define(AUTHEN_METH_RADIUS, 16#10).
+-define(AUTHEN_METH_KRB4, 16#11).
+-define(AUTHEN_METH_RCMD, 16#20).
+% This is an Authorization Request packet, used by the client to request that
+% a user be able to run a particular command on the device.
+-record(author_request, {
+	authen_method,
+	priv_lvl,
+	authen_type,
+	authen_service,
+	user,
+	port,
+	rem_addr,
+	args}).
+
+
+-define(AUTHOR_STATUS_PASS_ADD, 16#1).
+-define(AUTHOR_STATUS_PASS_REPL, 16#2).
+-define(AUTHOR_STATUS_FAIL, 16#10).
+-define(AUTHOR_STATUS_ERROR, 16#11).
+-define(AUTHOR_STATUS_FOLLOW, 16#21).
+% This is an Authorization Reply packet, used by the server to indicate how
+% to proceed with command authorization at the shell.
+-record(author_response, {
+	status,
+	server_msg,
+	data,
+	args}).
+
+
+-define(ACCT_FLAG_MORE, 16#1).
+-define(ACCT_FLAG_START, 16#2).
+-define(ACCT_FLAG_STOP, 16#4).
+-define(ACCT_FLAG_WATCHDOG, 16#8).
+% This is an Accounting Request packet, used by the client to submit that a
+% command has been executed and should be logged.
+-record(acct_request, {
+	flags,
+	authen_method,
+	priv_lvl,
+	authen_type,
+	authen_service,
+	user,
+	port,
+	rem_addr,
+	args}).
+
+
+-define(ACCT_STATUS_SUCCESS, 16#1).
+-define(ACCT_STATUS_ERROR, 16#2).
+-define(ACCT_STATUS_FOLLOW, 16#21).
+% This is an Accouting Respone packet, used by the server to indicate that a
+% message has been logged properly.
+-record(acct_response, {
+	status,
+	server_msg,
+	data}).
 
 % Record types that can be found in the packet_data field.
--type tacacs_inner_data() :: #authen_start{} | #authen_reply{} | #authen_continue{}.
+-type tacacs_inner_data() :: #authen_start{} | #authen_reply{} |
+	#authen_continue{} | #author_request{} | #author_response{} |
+	#acct_request{} | #acct_response{}.
 
 % This is the TACACS+ header, which is always the same for each
 % packet type. Fields in here are used for encryption, and for
@@ -88,4 +157,4 @@
   sequence :: non_neg_integer(),
   flags :: non_neg_integer(),
   session_id :: non_neg_integer(),
-  packet_data :: netdata() | tacacs_inner_data()}).
+  packet_data :: iodata() | tacacs_inner_data()}).
