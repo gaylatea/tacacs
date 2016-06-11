@@ -46,15 +46,32 @@ parse_variable_fields(BitData, Lengths, State) ->
 	<<Field:FieldLength, Rest/bitstring>> = BitData,
 	parse_variable_fields(Rest, L, lists:append(State, [Field])).
 
+serialize_field(Data, Length, Original) when is_integer(Data) ->
+	<<Original/binary, Data:Length>>;
+serialize_field(Data, Length, Original) ->
+	<<Original/binary, Data:Length/bitstring>>.
+
 serialize_variable_fields(DataList, ElementLengths) ->
-	serialize_variable_fields(DataList, ElementLengths, []).
+	serialize_variable_fields(DataList, ElementLengths, <<>>).
 serialize_variable_fields(DataList, [], State) ->
-	{DataList, lists:flatten(State)};
+	{DataList, State};
 serialize_variable_fields(DataList, ElementLengths, State) ->
 	[Field|F] = DataList,
 	[FieldLength|L] = ElementLengths,
-	Serialized = lists:append(State, [<<Field:FieldLength>>]),
+	Serialized = serialize_field(Field, FieldLength, State),
 	serialize_variable_fields(F, L, Serialized).
+
+convert_args_to_strings(Args, Lengths) ->
+	convert_args_to_strings(Args, Lengths, []).
+convert_args_to_strings([], Lengths, State) ->
+	State;
+convert_args_to_strings(Args, [], State) ->
+	State;
+convert_args_to_strings(Args, Lengths, State) ->
+	[Arg|A] = Args,
+	[Length|L] = Lengths,
+	N = lists:append(State, [<<Arg:Length>>]),
+	convert_args_to_strings(A, L, N).
 
 gen_args_field_lengths(Count) ->
 	gen_args_field_lengths(Count, []).
@@ -125,10 +142,13 @@ parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem
 	<<User:UserLength/bitstring, Port:PortLength/bitstring,
 		RemoteAddr:RemoteAddrLength/bitstring, ArgsData/bitstring>> = MoreData,
 	{_, Args} = parse_variable_fields(ArgsData, [N*8 || N <- ArgumentLengths]),
+
+	ArgStrings = convert_args_to_strings(Args, [X*8 || X <- ArgumentLengths]),
+
 	TacacsData#tacacs{packet_data=#author_request{
 		authen_method=AuthenticationMethod, priv_lvl=PrivilegeLevel,
 		authen_type=AuthenticationType, authen_service=AuthenticationService,
-		user=User, port=Port, rem_addr=RemoteAddr, args=Args}};
+		user=User, port=Port, rem_addr=RemoteAddr, args=ArgStrings}};
 parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
 	<<"">>;
 parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
@@ -179,8 +199,10 @@ serialize_data(AuthData=#author_request{}) ->
 
 	ArgumentLengths = [iolist_size(X) || X <- Args],
 	ArgumentLengthSizes = gen_args_field_lengths(ArgumentCount),
-	ArgumentLengthData = serialize_variable_fields(ArgumentLengths, ArgumentLengthSizes),
-	ArgumentsData = serialize_variable_fields(Args, ArgumentLengths),
+	{_Remaining, ArgumentLengthData} = serialize_variable_fields(ArgumentLengths, ArgumentLengthSizes),
+
+	ArgumentLengthBytes = [X*8 || X <- ArgumentLengths],
+	{Remaining, ArgumentsData} = serialize_variable_fields(Args, ArgumentLengthBytes),
 
 	<<AuthenicationMethod:8, PrivilegeLevel:8, AuthenticationType:8,
 		AuthenticationService:8, UserLength:8, PortLength:8, RemoteAddrLength:8,
