@@ -150,11 +150,52 @@ parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem
 		authen_type=AuthenticationType, authen_service=AuthenticationService,
 		user=User, port=Port, rem_addr=RemoteAddr, args=ArgStrings}};
 parse_data(TacacsData=#tacacs{type=?AUTHOR}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
-	<<"">>;
-parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
-	<<"">>;
+	<<Status:8, ArgumentCount:8, ServerMessageLength:16, DataLength:16,
+		Rest/bitstring>> = TacacsData#tacacs.packet_data,
+
+	ArgLengthFieldLengths = gen_args_field_lengths(ArgumentCount),
+	{MoreData, ArgumentLengths} = parse_variable_fields(Rest, ArgLengthFieldLengths),
+
+	ServerMessageBytes = ServerMessageLength * 8,
+	DataBytes = DataLength * 8,
+
+	<<ServerMessage:ServerMessageBytes/bitstring, Data:DataBytes/bitstring,
+		ArgsData/bitstring>> = MoreData,
+	{_, Args} = parse_variable_fields(ArgsData, [N*8 || N <- ArgumentLengths]),
+	ArgStrings = convert_args_to_strings(Args, [X*8 || X <- ArgumentLengths]),
+
+	TacacsData#tacacs{packet_data=#author_response{
+		status=Status, server_msg=ServerMessage, data=Data, args=ArgStrings}};
 parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 1 ->
-	<<"">>.
+	<<Flags:8, AuthenticationMethod:8, PrivilegeLevel:8, AuthenticationType:8,
+		AuthenticationService:8, UserLength:8, PortLength:8, RemoteAddrLength:8,
+		ArgumentCount:8, Rest/bitstring>> = TacacsData#tacacs.packet_data,
+
+	ArgLengthFieldLengths = gen_args_field_lengths(ArgumentCount),
+	{MoreData, ArgumentLengths} = parse_variable_fields(Rest, ArgLengthFieldLengths),
+
+	UserBytes = UserLength * 8,
+	PortBytes = PortLength * 8,
+	RemoteAddrBytes = RemoteAddrLength * 8,
+
+	<<User:UserBytes/bitstring, Port:PortBytes/bitstring, RemoteAddr:RemoteAddrBytes/bitstring,
+		ArgsData/bitstring>> = MoreData,
+	{_, Args} = parse_variable_fields(ArgsData, [N*8 || N <- ArgumentLengths]),
+	ArgStrings = convert_args_to_strings(Args, [X*8 || X <- ArgumentLengths]),
+	TacacsData#tacacs{packet_data=#acct_request{
+		flags=Flags, authen_method=AuthenticationMethod, priv_lvl=PrivilegeLevel,
+		authen_type=AuthenticationType, authen_service=AuthenticationService,
+		user=User, port=Port, rem_addr=RemoteAddr, args=ArgStrings}};
+parse_data(TacacsData=#tacacs{type=?ACCT}) when TacacsData#tacacs.sequence rem 2 =:= 0 ->
+	<<ServerMessageLength:16, DataLength:16, Status:8,
+		Rest/bitstring>> = TacacsData#tacacs.packet_data,
+
+	ServerMessageBytes = ServerMessageLength * 8,
+	DataBytes = DataLength * 8,
+	<<ServerMessage:ServerMessageBytes/bitstring, Data:DataBytes/bitstring,
+		_Rest/bitstring>> = Rest,
+	TacacsData#tacacs{packet_data=#acct_response{status=Status,
+		server_msg=ServerMessage, data=Data}}.
 
 -spec serialize_data(tacacs_inner_data()) -> bitstring().
 serialize_data(AuthData=#authen_start{}) ->
@@ -209,11 +250,49 @@ serialize_data(AuthData=#author_request{}) ->
 		ArgumentCount:8, ArgumentLengthData/bitstring, User/bitstring,
 		Port/bitstring, RemoteAddr/bitstring, ArgumentsData/bitstring>>;
 serialize_data(AuthData=#author_response{}) ->
-	<<"">>;
-serialize_data(AuthData=#acct_request{}) ->
-	<<"">>;
-serialize_data(AuthData=#acct_response{}) ->
-	<<"">>.
+	#author_response{status=Status, server_msg=ServerMessage, data=Data,
+		args=Args} = AuthData,
+
+	ServerMessageLength = iolist_size(ServerMessage),
+	DataLength = iolist_size(Data),
+
+	ArgumentCount = length(Args),
+	ArgumentLengths = [iolist_size(X) || X <- Args],
+	ArgumentLengthSizes = gen_args_field_lengths(ArgumentCount),
+	{_Remaining, ArgumentLengthData} = serialize_variable_fields(ArgumentLengths, ArgumentLengthSizes),
+
+	ArgumentLengthBytes = [X*8 || X <- ArgumentLengths],
+	{_Remaining, ArgumentsData} = serialize_variable_fields(Args, ArgumentLengthBytes),
+	<<Status:8, ArgumentCount:8, ServerMessageLength:16, DataLength:16,
+		ArgumentLengthData/bitstring, ServerMessage/bitstring, Data/bitstring,
+		ArgumentsData/bitstring>>;
+serialize_data(AcctData=#acct_request{}) ->
+	#acct_request{flags=Flags, authen_method=AuthenticationMethod, priv_lvl=PrivilegeLevel,
+		authen_type=AuthenticationType, authen_service=AuthenticationService,
+		user=User, port=Port, rem_addr=RemoteAddr, args=Args} = AcctData,
+
+	UserLength = iolist_size(User),
+	PortLength = iolist_size(Port),
+	RemoteAddrLength = iolist_size(RemoteAddr),
+
+	ArgumentCount = length(Args),
+	ArgumentLengths = [iolist_size(X) || X <- Args],
+	ArgumentLengthSizes = gen_args_field_lengths(ArgumentCount),
+	{_Remaining, ArgumentLengthData} = serialize_variable_fields(ArgumentLengths, ArgumentLengthSizes),
+
+	ArgumentLengthBytes = [X*8 || X <- ArgumentLengths],
+	{_Remaining, ArgumentsData} = serialize_variable_fields(Args, ArgumentLengthBytes),
+	<<Flags:8, AuthenticationMethod:8, PrivilegeLevel:8, AuthenticationType:8,
+		AuthenticationService:8, UserLength:8, PortLength:8, RemoteAddrLength:8,
+		ArgumentCount:8, ArgumentLengthData/bitstring, User/bitstring, Port/bitstring,
+		RemoteAddr/bitstring, ArgumentsData/bitstring>>;
+serialize_data(AcctData=#acct_response{}) ->
+	#acct_response{status=Status, server_msg=ServerMessage, data=Data} = AcctData,
+
+	ServerMessageLength = iolist_size(ServerMessage),
+	DataLength = iolist_size(Data),
+	<<ServerMessageLength:16, DataLength:16, Status:8, ServerMessage/bitstring,
+		Data/bitstring>>.
 
 %%====================================================================
 %% Tests.
@@ -302,6 +381,33 @@ commutative_parse_serialize_test() ->
 			args=[<<"cmd=test">>, <<"protocol=unknown">>]}},
 	AuthorizationRequestData = serialize(AuthorizationRequest),
 	AuthorizationRequest = parse(AuthorizationRequestData),
+
+	% Authorization Response ============================================
+	AuthorizationResponse = #tacacs{
+		version=0, type=?AUTHOR, sequence=2, flags=?UNENCRYPTED_FLAG, session_id=1,
+		packet_data=#author_response{status=?ACCT_STATUS_ERROR,
+		server_msg= <<"Not authorized.">>,
+		args=[<<"cmd=test">>, <<"protocol=unknown">>]}},
+	AuthorizationResponseData = serialize(AuthorizationResponse),
+	AuthorizationResponse = parse(AuthorizationResponseData),
+
+	% Accounting Request ================================================
+	AccountingRequest = #tacacs{
+		version=0, type=?ACCT, sequence=1, flags=?UNENCRYPTED_FLAG, session_id=1,
+		packet_data=#acct_request{flags=?ACCT_FLAG_START,
+			authen_method=?AUTHEN_METH_LOCAL, priv_lvl=?PRIV_LVL_USER,
+			authen_type=?AUTHEN_TYPE_ASCII, authen_service=?AUTHEN_SVC_LOGIN,
+			user= <<"silversupreme">>, port= <<"tty0">>,
+			rem_addr= <<"Test Datacentre">>, args=[<<"cmd=test">>]}},
+	AccountingRequestData = serialize(AccountingRequest),
+	AccountingRequest = parse(AccountingRequestData),
+
+	% Accounting Response ===============================================
+	AccountingResponse = #tacacs{
+		version=0, type=?ACCT, sequence=2, flags=?UNENCRYPTED_FLAG, session_id=1,
+		packet_data=#acct_response{status=?ACCT_STATUS_SUCCESS}},
+	AccountingResponseData = serialize(AccountingResponse),
+	AccountingResponse = parse(AccountingResponseData),
 	ok.
 
 %%%-------------------------------------------------------------------

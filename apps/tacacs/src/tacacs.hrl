@@ -110,8 +110,8 @@
 % to proceed with command authorization at the shell.
 -record(author_response, {
 	status,
-	server_msg,
-	data,
+	server_msg= <<>>,
+	data= <<>>,
 	args}).
 
 
@@ -140,8 +140,8 @@
 % message has been logged properly.
 -record(acct_response, {
 	status,
-	server_msg,
-	data}).
+	server_msg= <<>>,
+	data= <<>>}).
 
 % Record types that can be found in the packet_data field.
 -type tacacs_inner_data() :: #authen_start{} | #authen_reply{} |
