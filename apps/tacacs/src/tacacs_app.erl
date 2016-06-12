@@ -4,22 +4,80 @@
 %%%-------------------------------------------------------------------
 
 -module(tacacs_app).
+-include("tacacs.hrl").
 
 -behaviour(application).
 
 %% Application callbacks
--export([start/2, stop/1]).
+-export([start/2, stop/1, loop/1]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
 start(_StartType, _StartArgs) ->
-    tacacs_sup:start_link().
+    tacacs_sup:start_link(),
+    socket_server:start(?MODULE, 10049, {?MODULE, loop}).
 
 %%--------------------------------------------------------------------
 stop(_State) ->
     ok.
+
+%%--------------------------------------------------------------------
+handle_auth(ok) ->
+  #authen_reply{status=?AUTHEN_STATUS_PASS};
+handle_auth(err) ->
+  #authen_reply{status=?AUTHEN_STATUS_FAIL, server_msg= <<"Access denied.">>};
+handle_auth(_TacacsData=#authen_start{user= <<>>}) ->
+  #authen_reply{status=?AUTHEN_STATUS_GETUSER};
+handle_auth(_TacacsData=#authen_continue{user_msg= <<"silversupreme">>}) ->
+  handle_auth(ok);
+handle_auth(_TacacsData=#authen_continue{user_msg= <<"anshulk">>}) ->
+  handle_auth(ok);
+handle_auth(_) ->
+  handle_auth(err).
+
+%%--------------------------------------------------------------------
+handle_message(Socket, TacacsData=#tacacs{type=?AUTHEN}) ->
+  io:format("~p~n", [TacacsData]),
+  Response = #tacacs{version=0, type=?AUTHEN,
+    sequence=(TacacsData#tacacs.sequence + 1),
+    session_id=TacacsData#tacacs.session_id,
+    packet_data=handle_auth(TacacsData#tacacs.packet_data)},
+
+  Serialized = tacacs:serialize(Response),
+  gen_tcp:send(Socket, Serialized),
+  ok;
+handle_message(Socket, TacacsData=#tacacs{type=?AUTHOR}) ->
+  % Always return OK because we don't care about per-command auth.
+  Response = #tacacs{version=0, type=?AUTHOR,
+    sequence=(TacacsData#tacacs.sequence + 1),
+    session_id=TacacsData#tacacs.session_id, packet_data=#author_response{
+      status=?AUTHOR_STATUS_PASS_ADD, args=[]}},
+
+  Serialized = tacacs:serialize(Response),
+  gen_tcp:send(Socket, Serialized),
+  ok;
+handle_message(Socket, TacacsData=#tacacs{type=?ACCT}) ->
+  Response = #tacacs{version=0, type=?ACCT,
+    sequence=(TacacsData#tacacs.sequence + 1),
+    session_id=TacacsData#tacacs.session_id, packet_data=#acct_response{
+      status=?ACCT_STATUS_SUCCESS}},
+
+  Serialized = tacacs:serialize(Response),
+  gen_tcp:send(Socket, Serialized),
+  ok.
+
+%%--------------------------------------------------------------------
+loop(Socket) ->
+  case gen_tcp:recv(Socket, 0) of
+        {ok, Data} ->
+            Packet = tacacs:parse(Data),
+            handle_message(Socket, Packet),
+            loop(Socket);
+        {error, closed} ->
+            ok
+    end.
 
 %%====================================================================
 %% Internal functions

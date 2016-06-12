@@ -155,6 +155,6 @@
 	version :: non_neg_integer(),
 	type :: non_neg_integer(),
   sequence :: non_neg_integer(),
-  flags :: non_neg_integer(),
+  flags=1 :: non_neg_integer(),
   session_id :: non_neg_integer(),
   packet_data :: iodata() | tacacs_inner_data()}).
