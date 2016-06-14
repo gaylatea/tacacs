@@ -5,7 +5,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("tacacs.hrl").
 
--export([parse/1, serialize/1]).
+-export([parse/1, serialize/1, parse/2, serialize/2]).
 
 -define(tacacs_packet_header,
 	<<_MajorVersion:4, MinorVersion:4, PacketType: 8, SequenceNumber: 8, Flags:8,
@@ -16,23 +16,31 @@
 %%====================================================================
 -spec parse(iolist() | bitstring()) -> #tacacs{}.
 parse(RawData) ->
+	parse(RawData, <<>>).
+parse(RawData, Key) ->
 	?tacacs_packet_header = RawData,
-	parse_data(#tacacs{version=MinorVersion, type=PacketType,
+	PacketData = #tacacs{version=MinorVersion, type=PacketType,
 		sequence=SequenceNumber, flags=Flags,
-		session_id=SessionId, packet_data=Rest}).
+		session_id=SessionId},
+
+	UnencryptedPacketData = handle_packet_encryption(PacketData, Rest, Key),
+	parse_data(PacketData#tacacs{packet_data=UnencryptedPacketData}).
 
 -spec serialize(#tacacs{}) -> bitstring().
 serialize(TacacsData) ->
+	serialize(TacacsData, <<>>).
+serialize(TacacsData, Key) ->
 	% Serialize the header here since it's common to all packet types.
 	#tacacs{version=MinorVersion,
 		type=PacketType, sequence=SequenceNumber, flags=Flags,
 		session_id=SessionId, packet_data=Rest} = TacacsData,
 
 	InnerData = serialize_data(Rest),
-	DataLength = iolist_size(InnerData),
+	EncryptedData = handle_packet_encryption(TacacsData, InnerData, Key),
+	DataLength = iolist_size(EncryptedData),
 	HeaderData = <<16#c:4, MinorVersion:4, PacketType:8, SequenceNumber:8,
 		Flags:8, SessionId:32, DataLength:32>>,
-	<<HeaderData/bitstring, InnerData/bitstring>>.
+	<<HeaderData/bitstring, EncryptedData/bitstring>>.
 
 %%====================================================================
 %% Internal API.
@@ -79,6 +87,36 @@ gen_args_field_lengths(0, State) ->
 	State;
 gen_args_field_lengths(Count, State) ->
 	gen_args_field_lengths(Count - 1, lists:append(State, [8])).
+
+gen_md5_for_packet(Packet, Key, LastMD5) ->
+	#tacacs{session_id=SessionId, version=Version,
+		sequence=SequenceNumber} = Packet,
+
+	KeySize = iolist_size(Key) * 8,
+	LastMD5Size = iolist_size(LastMD5) * 8,
+
+	MD5Input = <<SessionId:32, Key:KeySize/bitstring, 16#c:4, Version:4, SequenceNumber:8, LastMD5:LastMD5Size/bitstring>>,
+	ThisMD5 = erlang:md5(MD5Input).
+
+handle_packet_encryption(Packet, EncodedData, Key) ->
+	handle_packet_encryption(Packet, EncodedData, Key, {<<>>, <<>>}).
+handle_packet_encryption(Packet=#tacacs{flags=?UNENCRYPTED_FLAG}, EncodedData, _, _) ->
+	EncodedData;
+handle_packet_encryption(Packet, EncodedData, Key, {CurrentEncrypted, LastMD5}) when byte_size(EncodedData) =< 16 ->
+	RemainingSize = bit_size(EncodedData),
+  <<ThisString:RemainingSize, _Rest/bitstring>> = EncodedData,
+	ThisMD5 = gen_md5_for_packet(Packet, Key, LastMD5),
+	<<ThisMD5Int:RemainingSize, _NotNeededMD5/bitstring>> = ThisMD5,
+	TotallyEncryptedData = ThisString bxor ThisMD5Int,
+	<<CurrentEncrypted/bitstring, TotallyEncryptedData:RemainingSize>>;
+handle_packet_encryption(Packet, EncodedData, Key, {CurrentEncrypted, LastMD5}) ->
+	<<ThisString:128, Rest/bitstring>> = EncodedData,
+	ThisMD5 = gen_md5_for_packet(Packet, Key, LastMD5),
+	ThisMD5Size = size(ThisMD5) * 8,
+	<<ThisMD5Int:ThisMD5Size>> = ThisMD5,
+	TotallyEncryptedData = ThisString bxor ThisMD5Int,
+	handle_packet_encryption(Packet, Rest, Key,
+		{<<CurrentEncrypted/bitstring, TotallyEncryptedData:128>>, ThisMD5}).
 
 -spec parse_data(#tacacs{}) -> #tacacs{}.
 parse_data(TacacsData=#tacacs{type=?AUTHEN, sequence=1}) ->
@@ -337,6 +375,49 @@ serialize_variable_fields_test() ->
 	IoListData = [<<"cmd=test">>, <<"words">>],
 	IoLengths = [64, 40],
 	{[], <<"cmd=testwords">>} = serialize_variable_fields(IoListData, IoLengths),
+	ok.
+
+encrypt_packet_test() ->
+	Packet = #tacacs{
+		version=0, type=?AUTHEN, sequence=1, flags=0, session_id=1,
+		packet_data=#authen_start{
+			action=?AUTHEN_LOGIN, privilege_level=?PRIV_LVL_USER,
+			authen_type=?AUTHEN_TYPE_ASCII, service=?AUTHEN_SVC_LOGIN,
+			user= <<"silversupreme">>, port= <<"tty0">>,
+			remote_addr= <<"Test Datacentre">>, data= <<"">>}},
+	EncodedData = serialize_data(Packet#tacacs.packet_data),
+	EncodedDataSize = size(EncodedData),
+	EncryptedData = handle_packet_encryption(Packet, EncodedData, <<"test">>),
+	EncodedDataSize = size(EncryptedData),
+	EncodedData = handle_packet_encryption(Packet, EncryptedData, <<"test">>),
+	ok.
+
+unencrypted_packet_test() ->
+	Packet = #tacacs{
+		version=0, type=?AUTHEN, sequence=1, flags=?UNENCRYPTED_FLAG, session_id=1,
+		packet_data=#authen_start{
+			action=?AUTHEN_LOGIN, privilege_level=?PRIV_LVL_USER,
+			authen_type=?AUTHEN_TYPE_ASCII, service=?AUTHEN_SVC_LOGIN,
+			user= <<"silversupreme">>, port= <<"tty0">>,
+			remote_addr= <<"Test Datacentre">>, data= <<"">>}},
+	EncodedData = serialize_data(Packet#tacacs.packet_data),
+	EncodedData = handle_packet_encryption(Packet, EncodedData, <<"test">>),
+	ok.
+
+encrypted_packet_from_ruby_test() ->
+	% Use a packet encrypted from an external source to validate encryption.
+	RawData = <<192,2,1,0,7,96,46,192,0,0,0,52,222,21,87,19,134,174,65,254,21,
+	235,92,17,90,83,0,171,12,161,100,198,247,107,38,31,100,173,200,221,19,83,247,
+	60,232,98,195,232,64,91,69,225,101,136,179,60,32,42,50,90,88,162,9,123>>,
+
+	DesiredPacket = #tacacs{version=0, type=?AUTHOR, sequence=1,
+		flags=0, session_id=123743936, packet_data=#author_request{
+			authen_method=?AUTHEN_METH_NOT_SET, priv_lvl=?PRIV_LVL_USER,
+			authen_type=?AUTHEN_TYPE_ASCII, authen_service=?AUTHEN_SVC_NONE,
+			user= <<"silversuprme">>, port= <<>>, rem_addr= <<>>,
+			args=[<<"service=shell">>, <<"cmd=silversupreme">>]}},
+	DesiredPacket = parse(RawData, <<"test">>),
+	RawData = serialize(DesiredPacket, <<"test">>),
 	ok.
 
 commutative_parse_serialize_test() ->

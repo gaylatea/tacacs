@@ -37,25 +37,33 @@ handle_auth(_TacacsData=#authen_continue{user_msg= <<"anshulk">>}) ->
 handle_auth(_) ->
   handle_auth(err).
 
+handle_author(ok) ->
+  #author_response{status=?AUTHOR_STATUS_PASS_ADD, args=[]};
+handle_author(err) ->
+  #author_response{status=?AUTHOR_STATUS_FAIL, server_msg= <<"NO WRONG">>, args=[]};
+handle_author(_TacacsData=#author_request{args=[<<"service=shell">>,<<"cmd=hello">>]}) ->
+  handle_author(err);
+handle_author(_) ->
+  handle_author(ok).
+
 %%--------------------------------------------------------------------
 handle_message(Socket, TacacsData=#tacacs{type=?AUTHEN}) ->
-  io:format("~p~n", [TacacsData]),
   Response = #tacacs{version=0, type=?AUTHEN,
     sequence=(TacacsData#tacacs.sequence + 1),
     session_id=TacacsData#tacacs.session_id,
     packet_data=handle_auth(TacacsData#tacacs.packet_data)},
 
-  Serialized = tacacs:serialize(Response),
+  Serialized = tacacs:serialize(Response, <<"test">>),
   gen_tcp:send(Socket, Serialized),
   ok;
 handle_message(Socket, TacacsData=#tacacs{type=?AUTHOR}) ->
   % Always return OK because we don't care about per-command auth.
   Response = #tacacs{version=0, type=?AUTHOR,
     sequence=(TacacsData#tacacs.sequence + 1),
-    session_id=TacacsData#tacacs.session_id, packet_data=#author_response{
-      status=?AUTHOR_STATUS_PASS_ADD, args=[]}},
+    session_id=TacacsData#tacacs.session_id,
+    packet_data=handle_author(TacacsData#tacacs.packet_data)},
 
-  Serialized = tacacs:serialize(Response),
+  Serialized = tacacs:serialize(Response, <<"test">>),
   gen_tcp:send(Socket, Serialized),
   ok;
 handle_message(Socket, TacacsData=#tacacs{type=?ACCT}) ->
@@ -64,7 +72,7 @@ handle_message(Socket, TacacsData=#tacacs{type=?ACCT}) ->
     session_id=TacacsData#tacacs.session_id, packet_data=#acct_response{
       status=?ACCT_STATUS_SUCCESS}},
 
-  Serialized = tacacs:serialize(Response),
+  Serialized = tacacs:serialize(Response, <<"test">>),
   gen_tcp:send(Socket, Serialized),
   ok.
 
@@ -72,7 +80,7 @@ handle_message(Socket, TacacsData=#tacacs{type=?ACCT}) ->
 loop(Socket) ->
   case gen_tcp:recv(Socket, 0) of
         {ok, Data} ->
-            Packet = tacacs:parse(Data),
+            Packet = tacacs:parse(Data, <<"test">>),
             handle_message(Socket, Packet),
             loop(Socket);
         {error, closed} ->
