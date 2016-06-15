@@ -9,7 +9,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/2, stop/1, loop/1]).
+-export([start/2, stop/1, loop/1, send_response/2]).
 
 %%====================================================================
 %% API
@@ -22,6 +22,10 @@ start(_StartType, _StartArgs) ->
 %%--------------------------------------------------------------------
 stop(_State) ->
     ok.
+
+%%--------------------------------------------------------------------
+get_server_encryption_key() ->
+  application:get_env(tacacs, psk, <<>>).
 
 %%--------------------------------------------------------------------
 handle_auth(ok) ->
@@ -47,40 +51,37 @@ handle_author(_) ->
   handle_author(ok).
 
 %%--------------------------------------------------------------------
+send_response(Socket, Response) ->
+  Serialized = tacacs:serialize(Response, get_server_encryption_key()),
+  gen_tcp:send(Socket, Serialized),
+  ok.
+
+%%--------------------------------------------------------------------
 handle_message(Socket, TacacsData=#tacacs{type=?AUTHEN}) ->
   Response = #tacacs{version=0, type=?AUTHEN,
     sequence=(TacacsData#tacacs.sequence + 1),
     session_id=TacacsData#tacacs.session_id,
     packet_data=handle_auth(TacacsData#tacacs.packet_data)},
-
-  Serialized = tacacs:serialize(Response, <<"test">>),
-  gen_tcp:send(Socket, Serialized),
-  ok;
+  send_response(Socket, Response);
 handle_message(Socket, TacacsData=#tacacs{type=?AUTHOR}) ->
   % Always return OK because we don't care about per-command auth.
   Response = #tacacs{version=0, type=?AUTHOR,
     sequence=(TacacsData#tacacs.sequence + 1),
     session_id=TacacsData#tacacs.session_id,
     packet_data=handle_author(TacacsData#tacacs.packet_data)},
-
-  Serialized = tacacs:serialize(Response, <<"test">>),
-  gen_tcp:send(Socket, Serialized),
-  ok;
+  send_response(Socket, Response);
 handle_message(Socket, TacacsData=#tacacs{type=?ACCT}) ->
   Response = #tacacs{version=0, type=?ACCT,
     sequence=(TacacsData#tacacs.sequence + 1),
     session_id=TacacsData#tacacs.session_id, packet_data=#acct_response{
       status=?ACCT_STATUS_SUCCESS}},
-
-  Serialized = tacacs:serialize(Response, <<"test">>),
-  gen_tcp:send(Socket, Serialized),
-  ok.
+  send_response(Socket, Response).
 
 %%--------------------------------------------------------------------
 loop(Socket) ->
   case gen_tcp:recv(Socket, 0) of
         {ok, Data} ->
-            Packet = tacacs:parse(Data, <<"test">>),
+            Packet = tacacs:parse(Data, get_server_encryption_key()),
             handle_message(Socket, Packet),
             loop(Socket);
         {error, closed} ->
